@@ -1,214 +1,200 @@
-import uvicorn
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
-import fasttext
-import re
-import os
-from functools import lru_cache
+import base64
+import tempfile
+from pathlib import Path
 
-# + Федорцова П.С.
-FASTTEXT_MODELS_DIR = "fasttext_A"
-FASTTEXT_A_ASCII_WORK_DIR = "../fasttext_A_ascii_work"
-FASTTEXT_B_MODEL_PATH = "fasttext_B/cyberbullying_fasttext.bin"
-FASTTEXT_B_ASCII_MODEL_PATH = "../fasttext_B_ascii_work/cyberbullying_fasttext.bin"
-FASTTEXT_LOAD_CACHE_DIR = "../fasttext_load_cache"
-TOXIC_LABELS = [
-    "toxic",
-    "severe_toxic",
-    "obscene",
-    "threat",
-    "insult",
-    "identity_hate",
-]
-# - Федорцова П.С.
+import cv2
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from ultralytics import YOLO
 
 
-def get_pred(model, text):
-  text = clean_text(text)
-# + Федорцова П.С. 
-#   pred = model.predict(text)
-#   pred_int = int(pred[0][0][9])
-  if not text:
-    return 0
-  predictions = model.f.predict(f"{text}\n", 1, 0.0, "strict")
-  if not predictions:
-    return 0
-  pred_int = int(predictions[0][1].replace("__label__", ""))
-# - Федорцова П.С.
-  return pred_int
+CLASS_NAMES = {
+    0: "helmet",
+    1: "mask",
+    2: "no_helmet",
+    3: "no_mask",
+    4: "no_vest",
+    5: "person",
+    6: "cone",
+    7: "vest",
+    8: "truck",
+    9: "car",
+}
 
-def get_model(path):
-  # + Федорцова П.С.
-  # model = fasttext.load_model(path)
-  try:
-    model = fasttext.load_model(path)
-  except ValueError:
-    source_path = path
-    os.makedirs(FASTTEXT_LOAD_CACHE_DIR, exist_ok=True)
-    cached_model_path = os.path.join(FASTTEXT_LOAD_CACHE_DIR, os.path.basename(source_path))
-    with open(source_path, "rb") as source_file:
-      with open(cached_model_path, "wb") as cached_file:
-        cached_file.write(source_file.read())
-    model = fasttext.load_model(cached_model_path)
-# return model1
-  return model
-# - Федорцова П.С.
-
-# + Федорцова П.С.
-@lru_cache(maxsize=1)
-def load_toxic_models():
-    models = {}
-    for label in TOXIC_LABELS:
-        model_path = os.path.join(FASTTEXT_MODELS_DIR, label, f"{label}_fasttext.bin")
-        ascii_model_path = os.path.join(FASTTEXT_A_ASCII_WORK_DIR, label, f"{label}_fasttext.bin")
-        if os.path.exists(ascii_model_path):
-            models[label] = get_model(ascii_model_path)
-        elif os.path.exists(model_path):
-            models[label] = get_model(model_path)
-    return models
+COLORS = {
+    0: (0, 255, 0),
+    1: (0, 255, 255),
+    2: (0, 0, 255),
+    3: (0, 69, 255),
+    4: (102, 0, 204),
+    5: (255, 255, 255),
+    6: (255, 128, 0),
+    7: (255, 0, 0),
+    8: (128, 128, 128),
+    9: (255, 0, 255),
+}
 
 
-@lru_cache(maxsize=1)
-def load_cyberbullying_model():
-    if os.path.exists(FASTTEXT_B_MODEL_PATH):
-        return get_model(FASTTEXT_B_MODEL_PATH)
-    if os.path.exists(FASTTEXT_B_ASCII_MODEL_PATH):
-        return get_model(FASTTEXT_B_ASCII_MODEL_PATH)
-    return None
+class ImgIn(BaseModel):
+    img: str
 
 
-def predict_toxic_labels(text: str) -> dict[str, int]:
-    cleaned_text = clean_text(text)
-    if not cleaned_text:
-        return {label: 0 for label in TOXIC_LABELS}
-
-    models = load_toxic_models()
-    predictions = {}
-    for label in TOXIC_LABELS:
-        model = models.get(label)
-        predictions[label] = get_pred(model, cleaned_text) if model is not None else 0
-    return predictions
+class ImgOut(BaseModel):
+    img: str
+    description: str
 
 
-def predict_cyberbullying_type(text: str) -> int:
-    cleaned_text = clean_text(text)
-    if not cleaned_text:
-        return 4
+class VideoIn(BaseModel):
+    video: str
 
-    model = load_cyberbullying_model()
-    if model is None:
-        return 4
 
-    return get_pred(model, cleaned_text)
-# - Федорцова П.С.
+class VideoOut(BaseModel):
+    video: str
+    description: str
 
-def clean_text(text):
-    text = text.lower()
-    text = re.sub(r'[^\sa-zA-Z0-9@\[\]]',' ',text)
-    text = re.sub(r'\w*\d+\w*', '', text)
-    text = re.sub('\s{2,}', " ", text)
-    return text
 
-app = FastAPI(title='BabaYaga')
+def load_model() -> YOLO:
+    root = Path(__file__).resolve().parent
+    default_best = root / "runs" / "helmet_dataset_yolov8n" / "weights" / "best.pt"
+    model_path = default_best if default_best.exists() else "yolov8n.pt"
+    return YOLO(str(model_path))
 
-class Comment(BaseModel):
-    # + Федорцова П.С.
-    # comm: str
-    comm: str = Field(validation_alias="text")
-    # - Федорцова П.С.
 
-class Usefull_comm_to_tg(BaseModel):
-    toxic: int 
-    severe_toxic: int
-# + Федорцова П.С.
-#   obscere: int    
-    obscene: int
-# - Федорцова П.С.
-    threat: int
-    insult: int
-    identity_hate: int
+MODEL = load_model()
+app = FastAPI(title="Safety Detection API")
 
-class Cyberbul_to_tg(BaseModel):
-    # + Федорцова П.С.
-    # come_type: int()
-    come_type: int
-    # - Федорцова П.С.
 
-class Coandce_to_tg(BaseModel):
-    toxic: int 
-    severe_toxic: int
-# + Федорцова П.С.
-#   obscere: int
-    obscene: int
-    threat: int
-# - Федорцова П.С.
-    insult: int
-    identity_hate: int
-    type_cyberbyllying: int
-# + Федорцова П.С.
-#class Cyber_Buller_Comm(BaseModel):
-# - Федорцова П.С.
+def decode_b64_to_image(data_b64: str) -> np.ndarray:
+    try:
+        raw = base64.b64decode(data_b64)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Плохое изображение")
+        return img
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Wrong image base64: {e}")
 
-@app.get("/")
-def read_root():
-    return {"messege": "fuck u!"}
 
-@app.post("/comment")
-def post_comment(text:Comment):
-    # + Федорцова П.С.
-    toxic_pred = predict_toxic_labels(text.comm)
-    # - Федорцова П.С.
-    usefull_com = Usefull_comm_to_tg(
-        # + Федорцова П.С.
-        # toxic=0,
-        # severe_toxic = 0,
-        # obscere = 0,
-        # threat = 0,
-        # insult = 0,
-        # identity_hate = 0)
-        toxic=toxic_pred["toxic"],
-        severe_toxic = toxic_pred["severe_toxic"],
-        obscene = toxic_pred["obscene"],
-        threat = toxic_pred["threat"],
-        insult = toxic_pred["insult"],
-        identity_hate = toxic_pred["identity_hate"])
-        # - Федорцова П.С.
-    return usefull_com
+def encode_image_to_b64(img: np.ndarray) -> str:
+    ok, encoded = cv2.imencode(".jpg", img)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Can not encode image")
+    return base64.b64encode(encoded.tobytes()).decode("utf-8")
 
-@app.post("/cyberbullying")
-def post_cyberbul_comm(text:Comment):    
-    cyberbul_comm = Cyberbul_to_tg(
-        # + Федорцова П.С.
-        # come_type = get_pred(get_model("optimized.model"), clean_text(text.comm)))
-        come_type = predict_cyberbullying_type(text.comm))
-        # - Федорцова П.С.
-    return cyberbul_comm
 
-@app.post("/coandcy")
-def post_coandcy_comm(text:Comment):
-    # + Федорцова П.С.
-    toxic_pred = predict_toxic_labels(text.comm)
-    # - Федорцова П.С.
-    coandce_comm = Coandce_to_tg(
-        # + Федорцова П.С.
-        # toxic = 0,
-        # severe_toxic = 0,
-        # obscere = 0,
-        # insult = 0,
-        # identity_hate = 0,
-        # type_cyberbyllying = 0
-        toxic = toxic_pred["toxic"],
-        severe_toxic = toxic_pred["severe_toxic"],
-        obscene = toxic_pred["obscene"],
-        threat = toxic_pred["threat"],
-        insult = toxic_pred["insult"],
-        identity_hate = toxic_pred["identity_hate"],
-        type_cyberbyllying = predict_cyberbullying_type(text.comm)
-        # - Федорцова П.С.
-        )
-    return coandce_comm
+def classes_to_description(found: set[int]) -> str:
+    lines = []
+    person = 5 in found
+    danger_objects = any(x in found for x in [6, 8, 9])
 
+    if person:
+        helmet_text = "есть каска" if 0 in found else "нет каски"
+        mask_text = "есть маска" if 1 in found else "нет маски"
+        vest_text = "есть жилет" if 7 in found else "нет жилета"
+        lines.append(f"Обнаружен человек: {helmet_text}, {mask_text}, {vest_text}.")
+
+    if person and danger_objects:
+        lines.append("Предупреждение: опасная зона.")
+
+    if not lines:
+        return "Опасных объектов не обнаружено."
+
+    return " ".join(lines)
+
+
+def run_detection_and_draw(frame: np.ndarray):
+    result = MODEL.predict(frame, conf=0.25, verbose=False)[0]
+    found_classes = set()
+
+    if result.boxes is not None:
+        for box in result.boxes:
+            cls_id = int(box.cls[0].item())
+            conf = float(box.conf[0].item())
+            found_classes.add(cls_id)
+
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+            color = COLORS.get(cls_id, (0, 255, 255))
+            label = f"{CLASS_NAMES.get(cls_id, str(cls_id))} {conf:.2f}"
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                frame,
+                label,
+                (x1, max(20, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+    return frame, found_classes
+
+
+@app.post("/img", response_model=ImgOut)
+def detect_img(payload: ImgIn):
+    img = decode_b64_to_image(payload.img)
+    img_out, found = run_detection_and_draw(img)
+    desc = classes_to_description(found)
+    return ImgOut(img=encode_image_to_b64(img_out), description=desc)
+
+
+@app.post("/video", response_model=VideoOut)
+def detect_video(payload: VideoIn):
+    try:
+        video_bytes = base64.b64decode(payload.video)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Wrong video base64: {e}")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+        in_path = temp_dir_path / "in.mp4"
+        out_path = temp_dir_path / "out.mp4"
+        in_path.write_bytes(video_bytes)
+
+        cap = cv2.VideoCapture(str(in_path))
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="Can not open input video")
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 25.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (width, height))
+        if not writer.isOpened():
+            cap.release()
+            raise HTTPException(status_code=500, detail="Can not create output video")
+
+        all_classes = set()
+
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            frame_out, found = run_detection_and_draw(frame)
+            all_classes.update(found)
+            writer.write(frame_out)
+
+        cap.release()
+        writer.release()
+
+        if not out_path.exists():
+            raise HTTPException(status_code=500, detail="Output video was not saved")
+
+        out_b64 = base64.b64encode(out_path.read_bytes()).decode("utf-8")
+        desc = classes_to_description(all_classes)
+        return VideoOut(video=out_b64, description=desc)
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

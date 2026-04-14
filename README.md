@@ -1,223 +1,146 @@
-# Задание 1
+# Задание 2 — Детекция средств безопасности (YOLOv8)
 
-Проект состоит из:
-- API на `FastAPI` для определения токсичности и кибербуллинга.
-- Telegram-бота для отправки текста в API.
-- Скриптов обучения `fastText` моделей на двух датасетах.
+Проект для обучения и использования модели YOLOv8 для детекции объектов на изображениях и видео:
+- каска / нет каски
+- маска / нет маски
+- жилет / нет жилета
+- человек, конус, грузовик, автомобиль
 
+В проекте есть:
+- скрипт подготовки датасета и запуска обучения;
+- API на FastAPI для обработки картинок и видео;
+- UI на Flet для отправки файлов в API;
+- утилита визуальной проверки разметки.
 
-`main.py`  
-Основной API-сервер. Поднимает `FastAPI` и предоставляет методы:
-- `/comment` - определение токсичности по датасету A
-- `/cyberbullying` - определение типа кибербуллинга по датасету B
-- `/coandcy` - совместное использование обеих моделей
+## Структура и назначение файлов
 
-`bot.py`  
-Telegram-бот. Позволяет выбрать режим кнопкой, затем отправить текст и получить ответ от моделей.
+- `train_yolo.py` — подготовка датасета и запуск обучения YOLOv8:
+  - удаляет пустые label-файлы и соответствующие изображения;
+  - формирует `css-data/data_custom.yaml`;
+  - запускает обучение модели.
+- `main.py` — backend API (FastAPI):
+  - POST `/img` для обработки изображения;
+  - POST `/video` для обработки видео;
+  - загружает веса модели (`best.pt`, если есть, иначе `yolov8n.pt`).
+- `app.py` — desktop/web UI (Flet) для работы с API:
+  - загрузка изображения/видео;
+  - отправка в API;
+  - просмотр и сохранение результата.
+- `work_dataset_img.py` — утилита проверки качества разметки:
+  - берет несколько пар `image + label`;
+  - отрисовывает bounding boxes;
+  - сохраняет примеры в корень проекта.
+- `requirements.txt` — Python-зависимости с зафиксированными версиями.
+- `css-data/` — датасет в формате YOLO:
+  - `train/`, `valid/`, `test/`;
+  - внутри каждого: `images/` и `labels/`.
+- `css-data/data_custom.yaml` — конфиг датасета для YOLO (пути + классы).
 
-`train_model_A.py`  
-Обучение шести бинарных `fastText` моделей по датасету A:
-- `toxic`
-- `severe_toxic`
-- `obscene`
-- `threat`
-- `insult`
-- `identity_hate`
+## Классы в разметке датасета
 
-`train_model_B.py`  
-Обучение одной многоклассовой `fastText` модели по датасету B для `cyberbullying_type`.
+Используется 10 классов:
 
-`work_on_dataset.py`  
-Подготовка исходных датасетов:
-- очистка
-- удаление дублей
-- сохранение `dataset_A.csv`
-- сохранение `dataset_B.csv`
+- `0` — `helmet` (каска)
+- `1` — `mask` (маска)
+- `2` — `no_helmet` (без каски)
+- `3` — `no_mask` (без маски)
+- `4` — `no_vest` (без жилета)
+- `5` — `person` (человек)
+- `6` — `cone` (сигнальный конус)
+- `7` — `vest` (жилет)
+- `8` — `truck` (грузовик)
+- `9` — `car` (автомобиль)
 
-`dataset_A.csv`  
-Подготовленный датасет токсичности.
+## Какие методы есть
 
-`dataset_B.csv`  
-Подготовленный датасет кибербуллинга.
+### `train_yolo.py`
+- `find_image_for_label(images_dir, label_stem)` — ищет изображение для label по stem и расширению.
+- `clean_empty_labels_for_split(split_dir)` — удаляет пустые `.txt` и соответствующие картинки.
+- `create_dataset_yaml(dataset_root)` — создает `data_custom.yaml`.
+- `train_yolo(yaml_path)` — запускает обучение через `ultralytics.YOLO`.
 
-`modules/config.py`  
-Конфигурация бота:
-- токен
-- названия токсичных классов
-- названия классов кибербуллинга
+### `main.py` (API)
+- `load_model()` — загрузка модели из `runs/.../best.pt` или базовой `yolov8n.pt`.
+- `decode_b64_to_image(data_b64)` — декодирование base64 -> OpenCV image.
+- `encode_image_to_b64(img)` — кодирование OpenCV image -> base64.
+- `classes_to_description(found)` — формирование текстового описания по найденным классам.
+- `run_detection_and_draw(frame)` — инференс + отрисовка боксов/меток.
+- `detect_img(payload)` — endpoint `/img`.
+- `detect_video(payload)` — endpoint `/video`.
 
-`modules/types.py`  
-Формирование текстового ответа для Telegram-бота.
+### `app.py` (UI)
+- `main(page)` — сборка UI и регистрация обработчиков.
+- `show_message(text, color)` — вывод уведомлений.
+- `save_file_result(e)` — сохранение результата (картинка/видео).
+- `pick_image_result(e)` — выбор и предпросмотр входного изображения.
+- `send_image_to_api(_)` — отправка изображения в API.
+- `save_image_result(_)` — сохранение выходного изображения.
+- `pick_video_result(e)` — выбор входного видео.
+- `send_video_to_api(_)` — отправка видео в API.
+- `save_video_result(_)` — сохранение выходного видео.
+- `open_output_video(_)` — открытие обработанного видео.
 
-`modules/replykeyboards.py`  
-Кнопки Telegram-бота.
+### `work_dataset_img.py`
+- `get_image_label_pairs(images_dir, labels_dir, limit)` — сбор пар image/label.
+- `parse_yolo_label_line(line)` — парсинг строки YOLO-разметки.
+- `yolo_to_xyxy(...)` — конвертация YOLO-координат в пиксели (`x1,y1,x2,y2`).
+- `draw_boxes(image_path, label_path, output_path, classes_set)` — отрисовка боксов и сохранение файла.
+- `process_split(split_name, base_dir, output_dir, classes_set)` — обработка одного split.
 
-`requirements.txt`  
-Список основных зависимостей проекта.
+## Какие JSON используются
 
-## Что делает API
+Но есть JSON-формат обмена с API:
 
-API принимает текст и возвращает результат работы моделей.
-
-### 1. `POST /comment`
-
-Определяет токсичность по датасету A.
-
-Входной JSON:
+### Endpoint: `POST /img`
+Запрос:
 ```json
 {
-  "text": ""
+  "img": "base64"
+}
+```
+Ответ:
+```json
+{
+  "img": "base64",
+  "description": "..."
 }
 ```
 
-Выходной JSON:
+### Endpoint: `POST /video`
+Запрос:
 ```json
 {
-  "toxic": (0\1),
-  "severe_toxic": (0\1),
-  "obscene": (0\1),
-  "threat": (0\1),
-  "insult": (0\1),
-  "identity_hate": (0\1)
+  "video": "base64"
+}
+```
+Ответ:
+```json
+{
+  "video": "base64",
+  "description": "..."
 }
 ```
 
-### 2. `POST /cyberbullying`
+## Запуск проекта
 
-Определяет тип кибербуллинга по датасету B.
-
-Входной JSON:
-```json
-{
-  "text": ""
-}
-```
-
-Выходной JSON:
-```json
-{
-  "come_type": (0\1\2\3\4\5)
-}
-```
-
-Расшифровка классов:
-- `0` - religion
-- `1` - age
-- `2` - gender
-- `3` - ethnicity
-- `4` - not_cyberbullying
-- `5` - other_cyberbullying
-
-### 3. `POST /coandcy`
-
-Совместное использование токсичной модели и модели кибербуллинга.
-
-Входной JSON:
-```json
-{
-  "text": ""
-}
-```
-
-Выходной JSON:
-```json
-{
-  "toxic": (0\1),
-  "severe_toxic": (0\1),
-  "obscene": (0\1),
-  "threat": (0\1),
-  "insult": (0\1),
-  "identity_hate": (0\1),
-  "type_cyberbyllying": (0\1\2\3\4\5)
-}
-```
-
-## Как запустить API
-
-Из папки `Задание_1`:
-
+1) Установить зависимости:
 ```bash
-main.py
+pip install -r requirements.txt
 ```
 
-После запуска:
-- Swagger UI: http://127.0.0.1:8080/docs
-- ReDoc: http://127.0.0.1:8080/redoc
-- OpenAPI JSON: http://127.0.0.1:8080/openapi.json
-
-Если нужен доступ с другого устройства в сети, используйте IP компьютера вместо `127.0.0.1`.
-
-## Как запустить Telegram-бота
-
-Из папки `Задание_1`:
-
+2) Обучить модель:
 ```bash
-bot.py
+python train_yolo.py
 ```
 
-Сценарий работы:
-1. Нажать кнопку режима.
-2. Бот попросит ввести текст.
-3. После отправки текста бот покажет сообщение `Загрузка...`
-4. Затем бот заменит это сообщение на ответ модели.
-
-## Как обучить модели
-
-### Датасет A
-
+3) Запустить API:
 ```bash
-train_model_A.py
+python main.py
 ```
 
-### Датасет B
-
+4) Запустить UI:
 ```bash
-train_model_B.py
+python app.py
 ```
 
-## ASCII-папки
-
-`fastText` на Windows может не открывать файлы и модели, если путь содержит кириллицу.
-
-Они нужны только как обход проблемы с путями Windows и `fastText`.
-
-## Результаты обучения моделей
-
-### Модели датасета A
-
-#### `toxic`
-- Accuracy: `0.9640`
-- F1: `0.8003`
-
-#### `severe_toxic`
-- Accuracy: `0.9897`
-- F1: `0.4128`
-
-#### `obscene`
-- Accuracy: `0.9790`
-- F1: `0.7868`
-
-#### `threat`
-- Accuracy: `0.9971`
-- F1: `0.4250`
-
-#### `insult`
-- Accuracy: `0.9710`
-- F1: `0.6714`
-
-#### `identity_hate`
-- Accuracy: `0.9913`
-- F1: `0.3877`
-
-### Модель датасета B
-
-- Accuracy: `0.8238`
-- F1 weighted: `0.8237`
-
-По классам:
-- `0`: F1 `0.95`
-- `1`: F1 `0.97`
-- `2`: F1 `0.87`
-- `3`: F1 `0.98`
-- `4`: F1 `0.57`
-- `5`: F1 `0.60`
+По умолчанию UI отправляет запросы в `http://127.0.0.1:8000`.
