@@ -5,6 +5,9 @@ from pathlib import Path
 import flet as ft
 import requests
 
+EMPTY_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7ZQf4AAAAASUVORK5CYII="
+EMPTY_IMAGE_BYTES = base64.b64decode(EMPTY_IMAGE_BASE64)
+
 
 def main(page: ft.Page):
     page.title = "UI"
@@ -25,20 +28,19 @@ def main(page: ft.Page):
         "input_video_bytes": None,
         "output_video_bytes": None,
         "output_video_path": None,
-        "save_type": None,  # "img" или "video"
     }
 
     # ---------- Картинки ----------
     image_input_name = ft.Text("Файл не выбран")
     image_input_preview = ft.Image(
-        src="",
+        src=EMPTY_IMAGE_BYTES,
         width=450,
         height=320,
         fit="contain",
         border_radius=8,
     )
     image_output_preview = ft.Image(
-        src="",
+        src=EMPTY_IMAGE_BYTES,
         width=450,
         height=320,
         fit="contain",
@@ -73,42 +75,29 @@ def main(page: ft.Page):
         page.snack_bar.open = True
         page.update()
 
-    def save_file_result(e: ft.FilePickerResultEvent):
-        if not e.path:
-            return
-
-        save_path = Path(e.path)
-        try:
-            if state["save_type"] == "img" and state["output_img_bytes"] is not None:
-                save_path.write_bytes(state["output_img_bytes"])
-                show_message(f"Картинка сохранена: {save_path}", "green")
-            elif state["save_type"] == "video" and state["output_video_bytes"] is not None:
-                save_path.write_bytes(state["output_video_bytes"])
-                show_message(f"Видео сохранено: {save_path}", "green")
-            else:
-                show_message("Нет данных для сохранения", "red")
-        except Exception as ex:
-            show_message(f"Ошибка сохранения: {ex}", "red")
-
-    save_picker = ft.FilePicker(on_result=save_file_result)
-    page.overlay.append(save_picker)
+    save_picker = ft.FilePicker()
+    page.services.append(save_picker)
 
     # ---------------- Картинки ----------------
-    def pick_image_result(e: ft.FilePickerResultEvent):
-        if not e.files:
+    image_picker = ft.FilePicker()
+    page.services.append(image_picker)
+
+    async def pick_image_result(_):
+        files = await image_picker.pick_files(
+            allow_multiple=False,
+            allowed_extensions=["jpg", "jpeg", "png", "bmp"],
+        )
+        if not files:
             return
 
-        path = Path(e.files[0].path)
+        path = Path(files[0].path)
         image_input_name.value = f"Вход: {path.name}"
         state["input_img_bytes"] = path.read_bytes()
 
-        image_input_preview.src_base64 = base64.b64encode(state["input_img_bytes"]).decode("utf-8")
-        image_output_preview.src_base64 = None
+        image_input_preview.src = state["input_img_bytes"]
+        image_output_preview.src = EMPTY_IMAGE_BYTES
         image_description.value = ""
         page.update()
-
-    image_picker = ft.FilePicker(on_result=pick_image_result)
-    page.overlay.append(image_picker)
 
     def send_image_to_api(_):
         if state["input_img_bytes"] is None:
@@ -124,32 +113,46 @@ def main(page: ft.Page):
 
             out_b64 = data.get("img", "")
             description = data.get("description", "")
+            if not out_b64:
+                raise ValueError("API вернуло пустое изображение")
             state["output_img_bytes"] = base64.b64decode(out_b64)
 
-            image_output_preview.src_base64 = out_b64
+            image_output_preview.src = state["output_img_bytes"]
             image_description.value = description
             page.update()
             show_message("Готово", "green")
         except Exception as ex:
             show_message(f"Ошибка API: {ex}", "red")
 
-    def save_image_result(_):
+    async def save_image_result(_):
         if state["output_img_bytes"] is None:
             show_message("Нет картинки для сохранения", "red")
             return
-        state["save_type"] = "img"
-        save_picker.save_file(
-            dialog_title="Сохранить картинку",
-            file_name="result.jpg",
-            allowed_extensions=["jpg", "jpeg", "png"],
-        )
+        try:
+            save_path = await save_picker.save_file(
+                dialog_title="Сохранить картинку",
+                file_name="result.jpg",
+                allowed_extensions=["jpg", "jpeg", "png"],
+                src_bytes=state["output_img_bytes"],
+            )
+            if save_path:
+                show_message(f"Картинка сохранена: {save_path}", "green")
+        except Exception as ex:
+            show_message(f"Ошибка сохранения: {ex}", "red")
 
     # ---------------- Видосики ----------------
-    def pick_video_result(e: ft.FilePickerResultEvent):
-        if not e.files:
+    video_picker = ft.FilePicker()
+    page.services.append(video_picker)
+
+    async def pick_video_result(_):
+        files = await video_picker.pick_files(
+            allow_multiple=False,
+            allowed_extensions=["mp4", "avi", "mov", "mkv"],
+        )
+        if not files:
             return
 
-        path = Path(e.files[0].path)
+        path = Path(files[0].path)
         video_input_name.value = f"Вход: {path.name}"
         state["input_video_bytes"] = path.read_bytes()
 
@@ -158,9 +161,6 @@ def main(page: ft.Page):
         video_output_name.value = "Видео от API еще не получено"
         video_description.value = ""
         page.update()
-
-    video_picker = ft.FilePicker(on_result=pick_video_result)
-    page.overlay.append(video_picker)
 
     def send_video_to_api(_):
         if state["input_video_bytes"] is None:
@@ -192,10 +192,22 @@ def main(page: ft.Page):
         except Exception as ex:
             show_message(f"Ошибка API: {ex}", "red")
 
-    def save_video_result(_):
+    async def save_video_result(_):
         if state["output_video_bytes"] is None:
             show_message("Нет видео для сохранения", "red")
             return
+        try:
+            save_path = await save_picker.save_file(
+                dialog_title="Сохранить видео",
+                file_name="result.mp4",
+                allowed_extensions=["mp4"],
+                src_bytes=state["output_video_bytes"],
+            )
+            if save_path:
+                show_message(f"Видео сохранено: {save_path}", "green")
+        except Exception as ex:
+            show_message(f"Ошибка сохранения: {ex}", "red")
+
     def open_output_video(_):
         if not state["output_video_path"]:
             show_message("Сначала получи видео от API", "red")
@@ -206,76 +218,57 @@ def main(page: ft.Page):
             return
         page.launch_url(video_path.as_uri())
 
-        state["save_type"] = "video"
-        save_picker.save_file(
-            dialog_title="Сохранить видео",
-            file_name="result.mp4",
-            allowed_extensions=["mp4"],
-        )
-
     # ---------- Макет ----------
-    image_tab = ft.Tab(
-        text="Картинки",
-        content=ft.Container(
-            padding=15,
-            content=ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.ElevatedButton(
-                                "Загрузить картинку",
-                                on_click=lambda _: image_picker.pick_files(
-                                    allow_multiple=False,
-                                    allowed_extensions=["jpg", "jpeg", "png", "bmp"],
-                                ),
-                            ),
-                            ft.ElevatedButton("Отправить в API", on_click=send_image_to_api),
-                            ft.OutlinedButton("Сохранить результат", on_click=save_image_result),
-                        ]
-                    ),
-                    image_input_name,
-                    ft.Row(
-                        controls=[
-                            ft.Column([ft.Text("Вход"), image_input_preview]),
-                            ft.Column([ft.Text("Выход"), image_output_preview]),
-                        ],
-                        spacing=20,
-                    ),
-                    image_description,
-                ],
-                spacing=12,
-            ),
+    image_tab_content = ft.Container(
+        padding=15,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Button(
+                            "Загрузить картинку",
+                            on_click=pick_image_result,
+                        ),
+                        ft.Button("Отправить в API", on_click=send_image_to_api),
+                        ft.OutlinedButton("Сохранить результат", on_click=save_image_result),
+                    ]
+                ),
+                image_input_name,
+                ft.Row(
+                    controls=[
+                        ft.Column([ft.Text("Вход"), image_input_preview]),
+                        ft.Column([ft.Text("Выход"), image_output_preview]),
+                    ],
+                    spacing=20,
+                ),
+                image_description,
+            ],
+            spacing=12,
         ),
     )
 
-    video_tab = ft.Tab(
-        text="Видео",
-        content=ft.Container(
-            padding=15,
-            content=ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.ElevatedButton(
-                                "Загрузить видео",
-                                on_click=lambda _: video_picker.pick_files(
-                                    allow_multiple=False,
-                                    allowed_extensions=["mp4", "avi", "mov", "mkv"],
-                                ),
-                            ),
-                            ft.ElevatedButton("Отправить в API", on_click=send_video_to_api),
-                            ft.OutlinedButton("Сохранить результат", on_click=save_video_result),
-                        ]
-                    ),
-                    video_input_name,
-                    video_output_name,
-                    input_video_path_text,
-                    output_video_path_text,
-                    ft.ElevatedButton("Открыть выходное видео", on_click=open_output_video),
-                    video_description,
-                ],
-                spacing=12,
-            ),
+    video_tab_content = ft.Container(
+        padding=15,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Button(
+                            "Загрузить видео",
+                            on_click=pick_video_result,
+                        ),
+                        ft.Button("Отправить в API", on_click=send_video_to_api),
+                        ft.OutlinedButton("Сохранить результат", on_click=save_video_result),
+                    ]
+                ),
+                video_input_name,
+                video_output_name,
+                input_video_path_text,
+                output_video_path_text,
+                ft.Button("Открыть выходное видео", on_click=open_output_video),
+                video_description,
+            ],
+            spacing=12,
         ),
     )
 
@@ -285,9 +278,27 @@ def main(page: ft.Page):
                 ft.Text("UI для YOLO API", size=24, weight=ft.FontWeight.BOLD),
                 api_url,
                 ft.Tabs(
+                    content=ft.Column(
+                        controls=[
+                            ft.TabBar(
+                                tabs=[
+                                    ft.Tab(label="Картинки"),
+                                    ft.Tab(label="Видео"),
+                                ]
+                            ),
+                            ft.TabBarView(
+                                controls=[
+                                    image_tab_content,
+                                    video_tab_content,
+                                ],
+                                expand=True,
+                            ),
+                        ],
+                        expand=True,
+                    ),
+                    length=2,
                     selected_index=0,
                     animation_duration=300,
-                    tabs=[image_tab, video_tab],
                     expand=1,
                 ),
             ],
